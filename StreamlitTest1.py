@@ -26,12 +26,14 @@ def zohoExport(viewid):
         CLIENTID = "1000.DQ32DWGNGDO7CV0V1S1CB3QFRAI72K"
         CLIENTSECRET = "92dfbbbe8c2743295e9331286d90da900375b2b66c"
         REFRESHTOKEN = "1000.0cd324af15278b51d3fc85ed80ca5c04.7f4492eb09c6ae494a728cd9213b53ce"
+        PROPERTYFILEPATH = 'tokens.properties';
+        ENCRYPTIONKEY = b'GiP-M-5xC76uR2on5q8TF8Hk-TkroydAPst3Qzy0syw=';
         ORGID = "60006357703"
         VIEWID = viewid
         WORKSPACEID = "174857000004732522"
 
     class sample:
-        ac = AnalyticsClient(Config.CLIENTID, Config.CLIENTSECRET, Config.REFRESHTOKEN)
+        ac = AnalyticsClient(Config.CLIENTID, Config.CLIENTSECRET, Config.REFRESHTOKEN, Config.PROPERTYFILEPATH, Config.ENCRYPTIONKEY)
 
         def export_data(self, ac):
             response_format = "csv"
