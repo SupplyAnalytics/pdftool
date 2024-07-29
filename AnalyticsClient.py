@@ -3,27 +3,20 @@ from io import StringIO
 import urllib
 import json
 import requests
-
+import math
+import time
+import os
+from cryptography.fernet import Fernet
 
 class AnalyticsClient:
     """
     AnalyticsClient provides the python based language binding to the https based API of Zoho Analytics.
     """
 
-    CLIENT_VERSION = "2.1.0"
+    CLIENT_VERSION = "2.5.0_PropertyFile"
     COMMON_ENCODE_CHAR = "UTF-8"
 
-    def __init__(self, client_id, client_secret, refresh_token):
-        """
-        Creates a new C{AnalyticsClient} instance.
-        @param client_id: User client id for OAUth
-        @type client_id:string
-        @param client_secret: User client secret for OAuth
-        @type client_secret:string
-        @param refresh_token: User's refresh token for OAUth).
-        @type refresh_token:string
-        """
-
+    def __init__(self, client_id, client_secret, refresh_token, properties_file, encryption_key):
         self.proxy = False
         self.proxy_host = None
         self.proxy_port = None
@@ -36,7 +29,48 @@ class AnalyticsClient:
         self.client_id = client_id
         self.client_secret = client_secret
         self.refresh_token = refresh_token
-        self.access_token = None
+        self.properties_file = properties_file
+        self.encryption_key = encryption_key
+
+        self.access_token = self.load_access_token()
+
+    def load_access_token(self):
+        if not os.path.exists(self.properties_file):
+            return None
+        
+        with open(self.properties_file, 'rb') as file:
+            encrypted_data = file.read()
+
+        if len(encrypted_data) == 0:
+            return None
+        
+        fernet = Fernet(self.encryption_key)
+        try:
+            decrypted_data = fernet.decrypt(encrypted_data).decode()
+            tokens = json.loads(decrypted_data)
+            if tokens.get(self.refresh_token):
+                return tokens[self.refresh_token]
+        except Exception as e:
+            print(f"Failed to decrypt or read access token: {e}")
+        
+        return None
+
+    def save_access_token(self, access_token):
+        try:
+            with open(self.properties_file, 'rb') as file:
+                encrypted_data = file.read()
+            fernet = Fernet(self.encryption_key)
+            decrypted_data = fernet.decrypt(encrypted_data).decode()
+            tokens = json.loads(decrypted_data)
+        except (FileNotFoundError, Exception):
+            tokens = {}
+
+        tokens[self.refresh_token] = access_token
+
+        encrypted_data = Fernet(self.encryption_key).encrypt(json.dumps(tokens).encode())
+        with open(self.properties_file, 'wb') as file:
+            file.write(encrypted_data)
+
 
     def get_org_instance(self, org_id):
         """
@@ -351,7 +385,20 @@ class AnalyticsClient:
             """
             endpoint = "/restapi/v2/subscription"
             response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
-            return response["data"]["subscription"]    
+            return response["data"]["subscription"]
+
+
+        def get_resource_details(self):
+            """
+            Returns resource usage details of the specified organization.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Resource details.
+            @rtype:dictionary
+            """
+            endpoint = "/restapi/v2/resources"
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]["resourceDetails"]    
 
         def get_meta_details(self, workspace_name, view_name):
             """
@@ -566,6 +613,22 @@ class AnalyticsClient:
             endpoint = self.endpoint + "/share"    
             self.ac.send_api_request("DELETE", endpoint, config, self.request_headers)
 
+        def get_shared_details_for_views(self, view_ids):
+            """
+            Returns shared details of the specified views.
+            @param view_ids: View ids for which sharing details are required.
+            @type view_ids: list
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Shared information.
+            @rtype:list
+            """
+            config = {}
+            config["viewIds"] = view_ids
+            endpoint = self.endpoint + "/share/shareddetails"
+            response = self.ac.send_api_request("GET", endpoint, config, self.request_headers)
+            return response["data"]["sharedDetails"]
+
         def get_folders(self):
             """
             Returns list of all accessible folders for the specified workspace.
@@ -624,6 +687,42 @@ class AnalyticsClient:
             endpoint = self.endpoint + "/tables"
             response = self.ac.send_api_request("POST", endpoint, config, self.request_headers)
             return int(response["data"]["viewId"])
+
+        def create_query_table(self, sql_query, query_table_name, config = {}):
+            """
+            Create a new query table in the workspace.
+            @param sql_query: SQL query to construct the query table.
+            @type sql_query: string
+            @param query_table_name: Name of the query table to be created.
+            @type query_table_name: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: created table id.
+            @rtype:string
+            """
+            config["sqlQuery"] = sql_query
+            config["queryTableName"] = query_table_name
+            endpoint = self.endpoint + "/querytables"
+            response = self.ac.send_api_request("POST", endpoint, config, self.request_headers)
+            return int(response["data"]["viewId"])
+
+        def edit_query_table(self, view_id, sql_query, config = {}):
+            """
+            Update the mentioned query table in the workspace.
+            @param view_id: Id of the query table to be updated.
+            @type view_id: string
+            @param sql_query: New SQL query to be updated.
+            @type sql_query: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            config["sqlQuery"] = sql_query
+            endpoint = self.endpoint + "/querytables/" + view_id
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
 
         def copy_views(self, view_ids, dest_workspace_id, config = {}, dest_org_id = None):
             """
@@ -1017,6 +1116,280 @@ class AnalyticsClient:
             endpoint = self.endpoint + "/datasources/" + datasource_id
             response = self.ac.send_api_request("PUT", endpoint, config, self.request_headers)   
 
+        def get_trash_views(self):
+            """
+            Initiate data sync for the specified datasource.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Trash view list.
+            @rtype:list
+            """
+            endpoint = self.endpoint + "/trash"
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]["views"]
+
+        def restore_trash_views(self, view_id, config = {}):
+            """
+            Restore the specified view from trash.
+            @param view_id: Id of the view.
+            @type view_id: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/trash/" + view_id
+            response = self.ac.send_api_request("POST", endpoint, None, self.request_headers)
+
+        def delete_trash_views(self, view_id, config = {}):
+            """
+            Delete the specified view permanently from trash.
+            @param view_id: Id of the view.
+            @type view_id: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/trash/" + view_id
+            response = self.ac.send_api_request("DELETE", endpoint, None, self.request_headers)
+
+        def change_folder_hierarchy(self, folder_id, hierarchy, config = {}):
+            """
+            Swaps the hierarchy of a parent folder and a subfolder.
+            @param folder_id: Id of the folder.
+            @type folder_id: string
+            @param hierarchy: New hierarchy for the folder. (0 - Parent; 1 - Child).
+            @type hierarchy: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/folders/" + folder_id + "/move";
+            config["hierarchy"] = hierarchy
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+
+        def change_folder_position(self, folder_id, reference_folder_id, config = {}):
+            """
+            Place the folder above the reference folder.
+            @param folder_id: Id of the folder.
+            @type folder_id: string
+            @param reference_folder_id: Id of the reference folder.
+            @type reference_folder_id: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/folders/" + folder_id + "/reorder";
+            config["referenceFolderId"] = reference_folder_id
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+
+        def move_views_to_folder(self, folder_id, view_ids, config = {}):
+            """
+            Move views to the mentioned folder.
+            @param folder_id: Id of the folder.
+            @type folder_id: string
+            @param view_ids: View ids to be moved.
+            @type view_ids: list
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/views/movetofolder";
+            config["folderId"] = folder_id
+            config["viewIds"] = view_ids
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+
+        def export_as_template(self, view_ids, file_path, config = {}):
+            """
+            Export the mentioned views as templates.
+            @param view_ids: Ids of the views to be exported.
+            @type view_ids: list
+            @param file_path: Path of the file where the data exported to be stored. ( Should be in 'atpt' format )
+            @type file_path: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/template/data"
+            config["viewIds"] = view_ids
+            self.ac.send_export_api_request(endpoint, config, self.request_headers, file_path)
+
+        def get_workspace_users(self):
+            """
+            Returns list of users for the specified workspace.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: User list.
+            @rtype:list
+            """
+            endpoint = self.endpoint + "/users";
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]["users"]
+
+        def add_workspace_users(self, email_ids, role, config = {}):
+            """
+            Add users to the specified workspace.
+            @param email_ids: The email address of the users to be added.
+            @type email_ids:list
+            @param role: Role of the user to be added.
+            @type role:string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            config["emailIds"] = email_ids
+            config["role"] = role
+            endpoint = self.endpoint + "/users";
+            self.ac.send_api_request("POST", endpoint, config, self.request_headers)
+
+        def remove_workspace_users(self, email_ids, config = {}):
+            """
+            Remove users from the specified workspace.
+            @param email_ids: The email address of the users to be removed.
+            @type email_ids:list
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            config["emailIds"] = email_ids
+            endpoint = self.endpoint + "/users";
+            self.ac.send_api_request("DELETE", endpoint, config, self.request_headers)
+
+        def change_workspace_user_status(self, email_ids, operation, config = {}):
+            """
+            Change users status in the specified workspace.
+            @param email_ids: The email address of the users.
+            @type email_ids:list
+            @param operation: New status for the users ( Values -  activate | deactivate ).
+            @type operation:string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            config["emailIds"] = email_ids
+            config["operation"] = operation
+            endpoint = self.endpoint + "/users/status";
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)  
+
+        def change_workspace_user_role(self, email_ids, role, config = {}):
+            """
+            Change role for the specified users.
+            @param email_ids: The email address of the users.
+            @type email_ids:list
+            @param role: New role for the users.
+            @type role:string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            config["emailIds"] = email_ids
+            config["role"] = role
+            endpoint = self.endpoint + "/users/role";
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+
+
+        def get_email_schedules(self):
+            """
+            Returns list of email schedules available in the specified workspace.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: List of email schedules.
+            @rtype: list
+            """
+            endpoint = self.endpoint + "/emailschedules"
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]["emailSchedules"]
+
+        def create_email_schedule(self, schedule_name, view_ids, format, email_ids, schedule_details, config={}):
+            """
+            Create an email schedule in the specified workspace.
+            @param schedule_name: Name of the email schedule.
+            @type schedule_name: string
+            @param view_ids: View ids to be mailed.
+            @type view_ids: list
+            @param format: The format in which the data has to be mailed.
+            @type format: string
+            @param email_ids: The recipients' email addresses for sending views.
+            @type email_ids: list
+            @param schedule_details: Contains schedule frequency, date, and time info.
+            @type schedule_details: dictionary
+            @param config: Contains any additional control parameters. Can be None.
+            @type config: dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Email schedule id.
+            @rtype: string
+            """
+            config["scheduleName"] = schedule_name
+            config["viewIds"] = view_ids
+            config["exportType"] = format
+            config["emailIds"] = email_ids
+            config["scheduleDetails"] = schedule_details
+            endpoint = self.endpoint + "/emailschedules"
+            response = self.ac.send_api_request("POST", endpoint, config, self.request_headers)
+            return str(response["data"]["scheduleId"])
+
+        def update_email_schedule(self, schedule_id, config):
+            """
+            Update configurations of the specified email schedule in the workspace.
+            @param schedule_id: Id for the email schedule.
+            @type schedule_id: string
+            @param config: Contains the control configurations.
+            @type config: dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Updated schedule id.
+            @rtype: string
+            """
+            endpoint = self.endpoint + "/emailschedules/" + schedule_id
+            response = self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+            return str(response["data"]["scheduleId"])
+
+        def trigger_email_schedule(self, schedule_id):
+            """
+            Trigger configured email schedules instantly.
+            @param schedule_id: Id for the email schedule.
+            @type schedule_id: string
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/emailschedules/" + schedule_id
+            self.ac.send_api_request("POST", endpoint, None, self.request_headers)
+
+        def change_email_schedule_status(self, schedule_id, operation):
+            """
+            Update email schedule status.
+            @param schedule_id: Id for the email schedule.
+            @type schedule_id: string
+            @param operation: New status for the schedule ( Values -  activate | deactivate )
+            @type operation: string
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/emailschedules/" + schedule_id + "/status"
+            config = {"operation": operation}
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+
+        def delete_email_schedule(self, schedule_id):
+            """
+            Delete the specified email schedule in the workspace.
+            @param schedule_id: Id for the email schedule.
+            @type schedule_id: string
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/emailschedules/" + schedule_id
+            self.ac.send_api_request("DELETE", endpoint, None, self.request_headers)
+
 
     class ViewAPI:
         """
@@ -1144,7 +1517,7 @@ class AnalyticsClient:
             @return: Permission details.
             @rtype:dictionary
             """
-            endpoint = self.endpoint + "/share/mypermissions"
+            endpoint = self.endpoint + "/share/userpermissions"
             response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
             return response["data"]["permissions"]
 
@@ -1203,6 +1576,61 @@ class AnalyticsClient:
             endpoint = self.endpoint + "/publish/privatelink"
             response = self.ac.send_api_request("POST", endpoint, config, self.request_headers)
             return response["data"]["privateUrl"]
+
+        def remove_private_access(self):
+            """
+            Remove private link access for the specified view.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/publish/privatelink"
+            response = self.ac.send_api_request("DELETE", endpoint, None, self.request_headers)
+
+        def make_view_public(self, config = {}):
+            """
+            Make the specified view publically accessible.
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Public URL.
+            @rtype:string
+            """
+            endpoint = self.endpoint + "/publish/public"
+            response = self.ac.send_api_request("POST", endpoint, config, self.request_headers)
+            return response["data"]["publicUrl"]
+
+        def remove_public_access(self):
+            """
+            Remove public access for the specified view.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            response = endpoint = self.endpoint + "/publish/public"
+            self.ac.send_api_request("DELETE", endpoint, None, self.request_headers)
+
+        def get_publish_configurations(self):
+            """
+            Returns publish configurations for the specified view.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Publish details.
+            @rtype:dictionary
+            """
+            endpoint = self.endpoint + "/publish/config"
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]
+
+        def update_publish_configurations(self, config = {}):
+            """
+            Update publish configurations for the specified view.
+            @param config: Contains the control parameters.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/publish/config"
+            response = self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
 
         def add_column(self, column_name, data_type, config = {}):
             """
@@ -1403,6 +1831,163 @@ class AnalyticsClient:
             response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
             return response["data"]
 
+        def get_formula_columns(self):
+            """
+            Returns list of all formula columns for the specified table.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Formula column list.
+            @rtype:list
+            """
+            endpoint = self.endpoint + "/customformulas"
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]["customFormulas"]
+
+        def add_formula_column(self, formula_name, expression, config = {}):
+            """
+            Add a formula column in the specified table.
+            @param formula_name: Name of the formula column to be created.
+            @type formula_name: string
+            @param expression: Formula expression.
+            @type expression: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Created formula id.
+            @rtype:string
+            """
+            endpoint = self.endpoint + "/customformulas"
+            config["formulaName"] = formula_name;
+            config["expression"] = expression;
+            response = self.ac.send_api_request("POST", endpoint, config, self.request_headers)
+            return response["data"]["formulaId"]
+
+        def edit_formula_column(self, formula_id, expression, config = {}):
+            """
+            Edit the specified formula column.
+            @param formula_id: Id of the formula column to be updated.
+            @type formula_id: string
+            @param expression: Formula expression.
+            @type expression: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/customformulas/" + formula_id
+            config["expression"] = expression;
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+
+        def delete_formula_column(self, formula_id, config = {}):
+            """
+            Delete the specified formula column.
+            @param formula_id: Id of the formula column to be deleted.
+            @type formula_id: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/customformulas/" + formula_id
+            self.ac.send_api_request("DELETE", endpoint, config, self.request_headers)
+
+        def get_aggregate_formulas(self):
+            """
+            Returns list of all aggregate formulas for the specified table.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Aggregate Formula list.
+            @rtype:list
+            """
+            endpoint = self.endpoint + "/aggregateformulas"
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]["aggregateFormulas"]
+
+        def add_aggregate_formula(self, formula_name, expression, config = {}):
+            """
+            Add an aggregate formula in the specified table.
+            @param formula_name: Name of the aggregate formula to be created.
+            @type formula_name: string
+            @param expression: Formula expression.
+            @type expression: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Created formula id.
+            @rtype:string
+            """
+            endpoint = self.endpoint + "/aggregateformulas"
+            config["formulaName"] = formula_name;
+            config["expression"] = expression;
+            response = self.ac.send_api_request("POST", endpoint, config, self.request_headers)
+            return response["data"]["formulaId"]
+
+        def edit_aggregate_formula(self, formula_id, expression, config = {}):
+            """
+            Edit the specified aggregate formula.
+            @param formula_id: Id of the aggregate formula to be updated.
+            @type formula_id: string
+            @param expression: Formula expression.
+            @type expression: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/aggregateformulas/" + formula_id
+            config["expression"] = expression;
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+
+        def delete_aggregate_formula(self, formula_id, config = {}):
+            """
+            Delete the specified aggregate formula.
+            @param formula_id: Id of the aggregate formula to be deleted.
+            @type formula_id: string
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/aggregateformulas/" + formula_id
+            self.ac.send_api_request("DELETE", endpoint, config, self.request_headers)
+
+        def get_view_dependents(self):
+            """
+            Returns list of dependents views for the specified view.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Dependent view list.
+            @rtype:list
+            """
+            endpoint = self.endpoint + "/dependents"
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]["views"]
+
+        def get_column_dependents(self, column_id):
+            """
+            Returns list of dependents views and formulas for the specified column.
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return: Dependent details.
+            @rtype:dictionary
+            """
+            endpoint = self.endpoint + "/columns/" + column_id + "/dependents"
+            response = self.ac.send_api_request("GET", endpoint, None, self.request_headers)
+            return response["data"]
+
+        def update_shared_details(self, config = {}):
+            """
+            Update shared details of the specified view.
+            @param config: Contains the control parameters.
+            @type config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            """
+            endpoint = self.endpoint + "/share"
+            self.ac.send_api_request("PUT", endpoint, config, self.request_headers)
+
 
     class BulkAPI:
         """
@@ -1440,7 +2025,35 @@ class AnalyticsClient:
             response = self.ac.send_import_api_request(endpoint, config, self.request_headers, file_path)
             return response["data"]
 
-        def import_raw_data_in_new_table(self, table_name, file_type, auto_identify, data, config = {}):
+        def import_data_in_new_table_as_batches(self, table_name, auto_identify, file_path, batch_size,
+                                                config={}, tool_config={}):
+            """
+            Create a new table and import the data contained in the mentioned file into the created table.
+            @param table_name: Name of the new table to be created.
+            @type table_name: string
+            @param auto_identify: Used to specify whether to auto identify the CSV format. Allowable values - true/false.
+            @type auto_identify: string
+            @param file_path: Path of the file to be imported.
+            @type file_path: string
+            @param batch_size: Number of lines per batch.
+            @type batch_size:int
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @param tool_config: Contains any additional control parameters for the library. Can be C{None}.
+            @type tool_config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return Import job id
+            @rtype:string
+            """
+            endpoint = self.bulk_endpoint + "/data/batch"
+            config["tableName"] = table_name
+            config["autoIdentify"] = auto_identify
+            response = self.ac.send_batch_import_api_request(endpoint, config, self.request_headers, file_path,
+                                                             batch_size, tool_config)
+            return response["data"]["jobId"]
+
+        def import_raw_data_in_new_table(self, table_name, file_type, auto_identify, data, config={}):
             """
             Create a new table and import the raw data provided into the created table.
             @param table_name: Name of the new table to be created.
@@ -1571,6 +2184,36 @@ class AnalyticsClient:
             response = self.ac.send_import_api_request(endpoint, config, self.request_headers, file_path)
             return response["data"]["jobId"]
 
+        def import_data_as_batches(self, view_id, import_type, auto_identify, file_path, batch_size,
+                                                config={}, tool_config={}):
+            """
+            Asynchronously import the data contained in the mentioned file into the table.
+            @param view_id: Id of the view where the data to be imported.
+            @type view_id: string
+            @param import_type: The type of import. Can be one of - append, truncateadd, updateadd.
+            @type import_type: string
+            @param auto_identify: Used to specify whether to auto identify the CSV format. Allowable values - true/false.
+            @type auto_identify: string
+            @param file_path: Path of the file to be imported.
+            @type file_path: string
+            @param batch_size: Number of lines per batch.
+            @type batch_size:int
+            @param config: Contains any additional control parameters. Can be C{None}.
+            @type config:dictionary
+            @param tool_config: Contains any additional control parameters for the library. Can be C{None}.
+            @type tool_config:dictionary
+            @raise ServerError: If the server has received the request but did not process the request due to some error.
+            @raise ParseError: If the server has responded but client was not able to parse the response.
+            @return Import job id
+            @rtype:string
+            """
+            endpoint = self.bulk_endpoint + "/views/" + view_id + "/data/batch"
+            config["importType"] = import_type
+            config["autoIdentify"] = auto_identify
+            response = self.ac.send_batch_import_api_request(endpoint, config, self.request_headers, file_path,
+                                                             batch_size, tool_config)
+            return response["data"]["jobId"]
+
         def get_import_job_details(self, job_id):
             """
             Returns the details of the import job.
@@ -1625,7 +2268,7 @@ class AnalyticsClient:
         def initiate_bulk_export_using_sql(self, sql_query, response_format, config = {}):
             """
             Initiate asynchronous export with the given SQL Query.
-            @param sql_query: The SQL Query whose output is exported.
+            @param sql_query: SQL Query.
             @type sql_query: string
             @param response_format: The format in which the data is to be exported.
             @type response_format: string
@@ -1679,6 +2322,45 @@ class AnalyticsClient:
         self.proxy_port = proxy_port
         self.proxy_user_name = proxy_user_name
         self.proxy_password = proxy_password
+
+    def send_batch_import_api_request(self, request_url, config, request_headers, file_path, batch_size, tool_config):
+        if self.access_token is None:
+            self.regenerate_analytics_oauth_token()
+
+        file_header = open(file_path, 'r').readline()
+        file_content = open(file_path, 'r').readlines()
+        file_content.__delitem__(0)
+        total_lines = len(file_content)
+        total_batch_count = math.ceil(total_lines / batch_size)
+        config["batchKey"] = "start"
+        request_url = self.analytics_server_url + request_url
+
+        for i in range(total_batch_count):
+            batch = ("".join(file_content[batch_size * i:batch_size + (i * batch_size)]))
+            batch_file = StringIO( file_header + batch )
+            files = {'FILE': batch_file}
+
+            config["isLastBatch"] = "true" if (i == (total_batch_count - 1)) else "false"
+            config_data = "CONFIG=" + urllib.parse.quote_plus(json.dumps(config))
+
+            resp_obj = self.submit_import_request(request_url, config_data, request_headers, self.access_token, files)
+
+            if not (str(resp_obj.status_code).startswith("2")):
+                if self.is_oauth_expired(resp_obj):
+                    self.regenerate_analytics_oauth_token()
+                    resp_obj = self.submit_import_request(request_url, config_data, request_headers, self.access_token,
+                                                          files)
+                    if not (str(resp_obj.status_code).startswith("2")):
+                        raise ServerError(resp_obj.resp_content, False)
+                else:
+                    raise ServerError(resp_obj.resp_content, False)
+
+            response = resp_obj.resp_content
+            response = json.loads(response)
+            config["batchKey"] = response["data"]["batchKey"]
+            time.sleep(2)
+
+        return response
 
     def send_import_api_request(self, request_url, config, request_headers, file_path, data=None):
         """
@@ -1823,6 +2505,7 @@ class AnalyticsClient:
         """
         Internal method to handle HTTP request.
         """
+       # print("AccessToken : " + str(self.access_token));
         if self.access_token == None:
             self.regenerate_analytics_oauth_token()
 
@@ -1908,7 +2591,7 @@ class AnalyticsClient:
             if self.proxy_user_name != None and self.proxy_password != None:
                 proxy_auth_details = HTTPProxyDigestAuth(self.proxy_user_name, self.proxy_password)
                 req_obj.auth = proxy_auth_details
-        return request_obj
+        return req_obj
 
 
     def is_oauth_expired(self, resp_obj):
@@ -1940,6 +2623,7 @@ class AnalyticsClient:
             oauth_json_resp = json.loads(oauth_resp_obj.resp_content)
             if("access_token" in oauth_json_resp):
                 self.access_token = oauth_json_resp["access_token"]
+                self.save_access_token(self.access_token)
                 return
 
         raise ServerError(oauth_resp_obj.resp_content, True)
