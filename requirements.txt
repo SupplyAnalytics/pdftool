@@ -1,0 +1,7 @@
+streamlit
+pandas
+pikepdf
+requests
+Pillow
+reportlab
+tqdm
