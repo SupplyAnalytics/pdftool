@@ -252,7 +252,7 @@ def generate_catalogue_pdf(Platform, BrandName, subcategory, price_range, produc
             df = df[(df['Aging'] >= Aging[0]) & (df['Aging'] <= Aging[1])]
             # df = df[df['Aging']==Aging[1]]
 
-    if BrandName == "All":
+    if BrandName == ["All"]:
         if option != "New Launched Variants":
             if productcount is not None:
                 if SellerName != "All":
